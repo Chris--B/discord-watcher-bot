@@ -163,12 +163,11 @@ impl EventHandler for Handler {
                     // Select an expression and a file at random.
                     // If either of these are empty, they are omitted from the response.
                     // If they're both empty, or if the file doesn't exist on disk,
-                    // the thread panics and no response is sent.
-                    // Note: The thread is in a threadpool, so the bot continues to run...
-                    //       the mutex locking everything becomes Poison.
+                    // we early-return and do not send a message.
                     let o_text = inner.resp_text.as_slice().choose(&mut rng);
                     let o_file = inner.resp_files.as_slice().choose(&mut rng);
-                    msg.channel_id
+                    if let Err(err) = msg
+                        .channel_id
                         .send_files(
                             o_file.iter().map(|pb| pb.as_path()),
                             |mut m: serenity::builder::CreateMessage| {
@@ -177,9 +176,11 @@ impl EventHandler for Handler {
                                 }
                                 m
                             }
-                        )
-                        .expect("Failed to send file and message");
-                    // `send_files` might panic if it fails, so we only update the state here
+                        ) {
+                        eprintln!("Failed to send file and message: {:#?}", err);
+                        return;
+                    }
+                    // `send_files` will return early if it fails, so we only update the state here
                     // after we know a response has been sent.
                     inner.state = BotState::Waiting(Instant::now() + inner.cooldown);
                 }
@@ -223,17 +224,17 @@ fn main() -> Result<(), Box<error::Error>> {
         .expect("Expected a token in the environment");
 
     let inner = HandlerInner {
-        user_id: 0,
-        user_name: "".to_string(),
+        user_id:          0,
+        user_name:        "".to_string(),
         cooldown:         Duration::from_secs(1),
         allowed_channels: vec!["test".to_string()], // This must not start with '#'!
         triggers:         vec!["jesus".to_string(), "christ".to_string()],
         resp_text:        vec![
-//            "You called? A".to_string(),
-//            "You called? C".to_string(),
+            "You called? A".to_string(),
+            "You called? B".to_string(),
         ],
         resp_files:       vec![
-//            "buddy.png".into(),
+            "buddy.png".into(),
         ],
         state:            BotState::Listening,
     };
