@@ -19,9 +19,23 @@ use serenity::{
     model::gateway::Ready,
 };
 
+use rand::{
+    prelude::*,
+    seq::SliceRandom,
+};
+
 enum BotState {
     Waiting(Instant),
     Listening,
+}
+
+impl BotState {
+    pub fn cooldown_expired(&self) -> bool {
+        match self {
+            BotState::Waiting(ref then) => *then <= Instant::now(),
+            BotState::Listening         => true,
+        }
+    }
 }
 
 /// State for a Handler
@@ -98,14 +112,21 @@ struct Handler {
 }
 
 impl Handler {
+    fn new(inner: HandlerInner) -> Handler {
+        Handler {
+            inner: Mutex::new(RefCell::new(inner))
+        }
+    }
+
+    /// Log a message from the server that the bot's on.
+    #[allow(dead_code)]
     fn log_msg(msg: &Message) {
         let username = msg.author.name.as_str();
         let text = msg.content.as_str();
 
-        let channel = msg.channel_id.name()
-            .unwrap_or_default();
+        let channel = msg.channel_id.name().unwrap_or_default();
         println!(
-            "#{channel:<10} [{user}] \"{text}\"",
+            " #{channel:<9} [{user}] \"{text}\"",
             channel=channel,
             user=username,
             text=text
@@ -117,7 +138,10 @@ impl EventHandler for Handler {
     // Event handlers are dispatched through a threadpool, and so multiple
     // events can be dispatched simultaneously.
     fn message(&self, _ctx: Context, msg: Message) {
-        Handler::log_msg(&msg);
+        // This is really useful for debugging, but otherwise kind of creepy.
+        // It doesn't need to access any Inner data, so we can do this before grabbing the lock.
+        //Handler::log_msg(&msg);
+
         let lock = self.inner.lock().unwrap();
         let mut inner = lock.borrow_mut();
 
@@ -126,28 +150,47 @@ impl EventHandler for Handler {
             return;
         }
 
-        if !inner.filter_matches(&msg) {
-            print!("Ignoring this:\t");
-            Handler::log_msg(&msg);
-            return;
-        }
-        match inner.state {
-            BotState::Listening => {
-                let now = Instant::now();
-                inner.state = BotState::Waiting(now + inner.cooldown);
-                if let Err(why) = msg.channel_id.send_files(
-                    ["buddy.png"].iter().cloned(),
-                    |m| m.content("You called?")
-                ) {
-                    eprintln!("Failed to send file: {:#?}", why);
-                }
+        if inner.filter_matches(&msg) {
+            // If the cooldown has expired, update it here.
+            // It helps keep the match block simple.
+            if inner.state.cooldown_expired() {
+                inner.state = BotState::Listening;
             }
-            BotState::Waiting(ref then) => {
-                let remaining = *then - Instant::now();
-                println!(
-                    "Ignoring valid request until cooldown finishes: {}.{:0>2} seconds left",
-                    remaining.as_secs(),
-                    remaining.subsec_nanos() / 10_000_000);
+            match inner.state {
+                BotState::Listening => {
+                    let mut rng = thread_rng();
+
+                    // Select an expression and a file at random.
+                    // If either of these are empty, they are omitted from the response.
+                    // If they're both empty, or if the file doesn't exist on disk,
+                    // the thread panics and no response is sent.
+                    // Note: The thread is in a threadpool, so the bot continues to run...
+                    //       the mutex locking everything becomes Poison.
+                    let o_text = inner.resp_text.as_slice().choose(&mut rng);
+                    let o_file = inner.resp_files.as_slice().choose(&mut rng);
+                    msg.channel_id
+                        .send_files(
+                            o_file.iter().map(|pb| pb.as_path()),
+                            |mut m: serenity::builder::CreateMessage| {
+                                if let Some(text) = o_text {
+                                    m = m.content(text);
+                                }
+                                m
+                            }
+                        )
+                        .expect("Failed to send file and message");
+                    // `send_files` might panic if it fails, so we only update the state here
+                    // after we know a response has been sent.
+                    inner.state = BotState::Waiting(Instant::now() + inner.cooldown);
+                }
+                // We should respond to this, but we're in cooldown so we won't.
+                BotState::Waiting(ref then) => {
+                    let remaining = *then - Instant::now();
+                    println!(
+                        "Ignoring message until cooldown finishes: {}.{:0>2} seconds left",
+                        remaining.as_secs(),
+                        remaining.subsec_nanos() / 10_000_000);
+                }
             }
         }
     }
@@ -171,31 +214,30 @@ fn main() -> Result<(), Box<error::Error>> {
     let id:          u64 = 539280999402438678;
     let permissions: u32 = 117760;
     println!(
-        "Add me to things: https://discordapp.com/oauth2/authorize?client_id={}&scope=bot&permissions={}",
+        "https://discordapp.com/oauth2/authorize?client_id={}&scope=bot&permissions={}",
         id,
         permissions);
 
     // Configure the client with your Discord bot token in the environment.
     let token = env::var("DISCORD_TOKEN")
         .expect("Expected a token in the environment");
-    // Create a new instance of the Client, logging in as a bot. This will
-    // automatically prepend your bot token with "Bot ", which is a requirement
-    // by Discord for bot users.
 
     let inner = HandlerInner {
         user_id: 0,
         user_name: "".to_string(),
-        cooldown:         Duration::from_secs(10),
+        cooldown:         Duration::from_secs(1),
         allowed_channels: vec!["test".to_string()], // This must not start with '#'!
         triggers:         vec!["jesus".to_string(), "christ".to_string()],
-        resp_text:        vec!["You called?".to_string()],
-        resp_files:       vec!["buddy.png".into()],
+        resp_text:        vec![
+//            "You called? A".to_string(),
+//            "You called? C".to_string(),
+        ],
+        resp_files:       vec![
+//            "buddy.png".into(),
+        ],
         state:            BotState::Listening,
     };
-    let handler = Handler {
-        inner: Mutex::new(RefCell::new(inner))
-    };
-    let mut client = Client::new(&token, handler)?;
+    let mut client = Client::new(&token, Handler::new(inner))?;
 
     // Finally, start a single shard, and start listening to events.
     //
