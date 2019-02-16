@@ -1,5 +1,3 @@
-extern crate serenity;
-
 use std::{
     cell::RefCell,
     env,
@@ -223,11 +221,16 @@ fn main() -> Result<(), Box<error::Error>> {
     let token = env::var("DISCORD_TOKEN")
         .expect("Expected a token in the environment");
 
+    // TODO: Invariants for these (should be enforced on conf load)
+    //      resp_text XOR resp_files can be empty, but not both
+    //      resp_files must exist on disk
+    //      triggers must be in lowercase
+    //      channels must not start with '#' - they're matched against names without the prefix '#'
     let inner = HandlerInner {
         user_id:          0,
         user_name:        "".to_string(),
         cooldown:         Duration::from_secs(1),
-        allowed_channels: vec!["test".to_string()], // This must not start with '#'!
+        allowed_channels: vec!["test".to_string()],
         triggers:         vec!["jesus".to_string(), "christ".to_string()],
         resp_text:        vec![
             "You called? A".to_string(),
@@ -239,14 +242,7 @@ fn main() -> Result<(), Box<error::Error>> {
         state:            BotState::Listening,
     };
     let mut client = Client::new(&token, Handler::new(inner))?;
-
-    // Finally, start a single shard, and start listening to events.
-    //
-    // Shards will automatically attempt to reconnect, and will perform
-    // exponential backoff until it reconnects.
-    if let Err(why) = client.start() {
-        println!("Client error: {:#?}", why);
-    }
+    client.start()?;
 
     Ok(())
 }
