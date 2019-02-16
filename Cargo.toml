@@ -1,0 +1,13 @@
+[package]
+name = "discord-bot"
+version = "0.1.0"
+authors = ["Chris Butler <chrisbutler296@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+json = "0.11"
+failure = "0.1"
+
+[dependencies.serenity]
+default-features = true
+version = "^0.5"
