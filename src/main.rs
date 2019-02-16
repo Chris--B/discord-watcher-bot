@@ -1,14 +1,16 @@
 extern crate serenity;
 
 use std::{
-    cell,
+    cell::RefCell,
     env,
     error,
-    ops,
     path::PathBuf,
     str,
-    sync,
-    time,
+    sync::Mutex,
+    time::{
+        Instant,
+        Duration,
+    },
 };
 
 use serenity::{
@@ -18,7 +20,7 @@ use serenity::{
 };
 
 enum BotState {
-    Waiting(time::Instant),
+    Waiting(Instant),
     Listening,
 }
 
@@ -32,7 +34,7 @@ struct HandlerInner {
 
     /// After sending a response to a trigger phrase, the bot will not send another
     /// response until this duration has passed.
-    pub cooldown:         time::Duration,
+    pub cooldown:         Duration,
 
     // The bot has a cooldown period before responding.
     // This state management is encoded in 'state'.
@@ -92,7 +94,7 @@ impl HandlerInner {
 }
 
 struct Handler {
-    inner: sync::Mutex<cell::RefCell<HandlerInner>>,
+    inner: Mutex<RefCell<HandlerInner>>,
 }
 
 impl Handler {
@@ -131,7 +133,7 @@ impl EventHandler for Handler {
         }
         match inner.state {
             BotState::Listening => {
-                let now = time::Instant::now();
+                let now = Instant::now();
                 inner.state = BotState::Waiting(now + inner.cooldown);
                 if let Err(why) = msg.channel_id.send_files(
                     ["buddy.png"].iter().cloned(),
@@ -141,7 +143,7 @@ impl EventHandler for Handler {
                 }
             }
             BotState::Waiting(ref then) => {
-                let remaining = *then - time::Instant::now();
+                let remaining = *then - Instant::now();
                 println!(
                     "Ignoring valid request until cooldown finishes: {}.{:0>2} seconds left",
                     remaining.as_secs(),
@@ -157,10 +159,9 @@ impl EventHandler for Handler {
     //
     // In this case, just print what the current user's username is.
     fn ready(&self, _: Context, ready: Ready) {
+        println!("{} is connected!", ready.user.name);
         let lock = self.inner.lock().unwrap();
         let mut inner = lock.borrow_mut();
-
-        println!("{} is connected!", ready.user.name);
         inner.user_id = ready.user.id.0;
         inner.user_name = ready.user.name;
     }
@@ -169,7 +170,11 @@ impl EventHandler for Handler {
 fn main() -> Result<(), Box<error::Error>> {
     let id:          u64 = 539280999402438678;
     let permissions: u32 = 117760;
-    println!("Add me to things: https://discordapp.com/oauth2/authorize?client_id={}&scope=bot&permissions={}", id, permissions);
+    println!(
+        "Add me to things: https://discordapp.com/oauth2/authorize?client_id={}&scope=bot&permissions={}",
+        id,
+        permissions);
+
     // Configure the client with your Discord bot token in the environment.
     let token = env::var("DISCORD_TOKEN")
         .expect("Expected a token in the environment");
@@ -180,7 +185,7 @@ fn main() -> Result<(), Box<error::Error>> {
     let inner = HandlerInner {
         user_id: 0,
         user_name: "".to_string(),
-        cooldown:         time::Duration::from_secs(10),
+        cooldown:         Duration::from_secs(10),
         allowed_channels: vec!["test".to_string()], // This must not start with '#'!
         triggers:         vec!["jesus".to_string(), "christ".to_string()],
         resp_text:        vec!["You called?".to_string()],
@@ -188,7 +193,7 @@ fn main() -> Result<(), Box<error::Error>> {
         state:            BotState::Listening,
     };
     let handler = Handler {
-        inner: sync::Mutex::new(cell::RefCell::new(inner))
+        inner: Mutex::new(RefCell::new(inner))
     };
     let mut client = Client::new(&token, handler)?;
 
