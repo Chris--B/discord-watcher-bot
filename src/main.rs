@@ -1,10 +1,13 @@
 extern crate serenity;
 
 use std::{
+    cell,
     env,
     error,
+    ops,
     path::PathBuf,
     str,
+    sync,
     time,
 };
 
@@ -19,53 +22,40 @@ enum BotState {
     Listening,
 }
 
-struct Handler {
+/// State for a Handler
+struct HandlerInner {
     /// User ID for this bot
-    user_id:          u64,
+    pub user_id:          u64,
 
     /// User name for this bot
-    user_name:        String,
+    pub user_name:        String,
 
     /// After sending a response to a trigger phrase, the bot will not send another
     /// response until this duration has passed.
-    cooldown:         time::Duration,
+    pub cooldown:         time::Duration,
 
     // The bot has a cooldown period before responding.
     // This state management is encoded in 'state'.
     /// Whether the bot is on cooldown or not
-    state:            BotState,
+    pub state:            BotState,
 
     /// A list of phrases that the bot will respond to
-    triggers:         Vec<String>,
+    pub triggers:         Vec<String>,
 
     /// A list of messages that the bot will choose from to respond to a trigger phrase.
     /// This response is paired with a file from `resp_files`.
-    resp_text:        Vec<String>,
+    pub resp_text:        Vec<String>,
 
     /// A list of file paths that the bot will choose from to respond to a trigger phrase.
     /// This response is paired with a message from `resp_text`.
-    resp_files:       Vec<PathBuf>,
+    pub resp_files:       Vec<PathBuf>,
 
     /// The bot will only process messages from these channels.
     /// Note: Do not include the `#` in a channel name. e.g. use `general`, not `#general`.
-    allowed_channels: Vec<String>,
+    pub allowed_channels: Vec<String>,
 }
 
-impl Handler {
-    fn log_msg(msg: &Message) {
-        let username = msg.author.name.as_str();
-        let text = msg.content.as_str();
-
-        let channel = msg.channel_id.name()
-            .unwrap_or_default();
-        println!(
-            "#{channel:<10} [{user}] \"{text}\"",
-            channel=channel,
-            user=username,
-            text=text
-        );
-    }
-
+impl HandlerInner {
     fn filter_matches(&self, msg: &Message) -> bool {
         // If the message is NOT from an allowed channel,
         // the filter must fail.
@@ -101,25 +91,48 @@ impl Handler {
     }
 }
 
+struct Handler {
+    inner: sync::Mutex<cell::RefCell<HandlerInner>>,
+}
+
+impl Handler {
+    fn log_msg(msg: &Message) {
+        let username = msg.author.name.as_str();
+        let text = msg.content.as_str();
+
+        let channel = msg.channel_id.name()
+            .unwrap_or_default();
+        println!(
+            "#{channel:<10} [{user}] \"{text}\"",
+            channel=channel,
+            user=username,
+            text=text
+        );
+    }
+}
+
 impl EventHandler for Handler {
     // Event handlers are dispatched through a threadpool, and so multiple
     // events can be dispatched simultaneously.
     fn message(&self, _ctx: Context, msg: Message) {
         Handler::log_msg(&msg);
-        if msg.author.id.0 == self.user_id {
+        let lock = self.inner.lock().unwrap();
+        let mut inner = lock.borrow_mut();
+
+        if msg.author.id.0 == inner.user_id {
             // Ignore our own messages.
             return;
         }
 
-        if !self.filter_matches(&msg) {
+        if !inner.filter_matches(&msg) {
             print!("Ignoring this:\t");
             Handler::log_msg(&msg);
             return;
         }
-        match self.state {
+        match inner.state {
             BotState::Listening => {
                 let now = time::Instant::now();
-                let state = BotState::Waiting(now + self.cooldown);
+                inner.state = BotState::Waiting(now + inner.cooldown);
                 if let Err(why) = msg.channel_id.send_files(
                     ["buddy.png"].iter().cloned(),
                     |m| m.content("You called?")
@@ -144,17 +157,12 @@ impl EventHandler for Handler {
     //
     // In this case, just print what the current user's username is.
     fn ready(&self, _: Context, ready: Ready) {
+        let lock = self.inner.lock().unwrap();
+        let mut inner = lock.borrow_mut();
+
         println!("{} is connected!", ready.user.name);
-        let user_id: &mut u64;
-        let user_name: &mut String;
-        // This won't be called more than once, but the API doesn't give us mutable references.
-        // We should probably do this with some Cells or something, but...
-        unsafe {
-            user_id = &mut *(&self.user_id as *const u64 as *mut u64);
-            user_name = &mut *(&self.user_name as *const String as *mut String);
-        }
-        *user_id = ready.user.id.0;
-        *user_name = ready.user.name;
+        inner.user_id = ready.user.id.0;
+        inner.user_name = ready.user.name;
     }
 }
 
@@ -169,7 +177,7 @@ fn main() -> Result<(), Box<error::Error>> {
     // automatically prepend your bot token with "Bot ", which is a requirement
     // by Discord for bot users.
 
-    let handler = Handler {
+    let inner = HandlerInner {
         user_id: 0,
         user_name: "".to_string(),
         cooldown:         time::Duration::from_secs(10),
@@ -179,7 +187,9 @@ fn main() -> Result<(), Box<error::Error>> {
         resp_files:       vec!["buddy.png".into()],
         state:            BotState::Listening,
     };
-
+    let handler = Handler {
+        inner: sync::Mutex::new(cell::RefCell::new(inner))
+    };
     let mut client = Client::new(&token, handler)?;
 
     // Finally, start a single shard, and start listening to events.
