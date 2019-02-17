@@ -219,7 +219,7 @@ fn main() -> Result<(), Box<error::Error>> {
 
     // Configure the client with your Discord bot token in the environment.
     let token = env::var("DISCORD_TOKEN")
-        .expect("Expected a token in the environment");
+        .expect("Set DISCORD_TOKEN before launching the bot");
 
     // TODO: Invariants for these (should be enforced on conf load)
     //      resp_text XOR resp_files can be empty, but not both
