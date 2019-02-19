@@ -2,6 +2,8 @@ use std::{
     cell::RefCell,
     env,
     error,
+    fs,
+    io::Read,
     path::PathBuf,
     str,
     sync::Mutex,
@@ -9,6 +11,11 @@ use std::{
         Instant,
         Duration,
     },
+};
+
+use failure::{
+    bail,
+    Error,
 };
 
 use serenity::{
@@ -21,6 +28,30 @@ use rand::{
     prelude::*,
     seq::SliceRandom,
 };
+
+use serde::{
+    Serialize,
+    Deserialize,
+};
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct UserConfig {
+    /// Cooldown in seconds that the bot waits before responding again.
+    /// Set to 0.0 to disable.
+    pub cooldown:           f64,
+    pub trigger_phrases:    Vec<String>,
+
+    /// When composing a response, a single phrase from this list is selected at
+    /// random and sent as the main text in the message.
+    pub response_phrases:   Vec<String>,
+
+    /// When composing a response, a single file from this list is selected at
+    /// random and attached.
+    pub response_filenames: Vec<PathBuf>,
+
+    /// The bot will only respond to trigger phrases in this channel list.
+    pub bot_channels:       Vec<String>,
+}
 
 enum BotState {
     Waiting(Instant),
@@ -93,7 +124,10 @@ impl HandlerInner {
         // the filter must fail.
         if self.triggers.iter()
             .find(|trigger| {
-                msg.content.contains(trigger.as_str())
+                msg.content
+                    .to_ascii_lowercase()
+                    // trigger should have already been lowercased on load.
+                    .contains(trigger.as_str())
             })
             .is_none() {
             return false;
@@ -209,6 +243,59 @@ impl EventHandler for Handler {
     }
 }
 
+fn load_config(json_string: &str) -> Result<HandlerInner, Error> {
+    let user_config: UserConfig = serde_json::from_str(json_string)?;
+
+    // We don't do any sanity checks for the cooldown - it's pretty straight forward.
+    let cooldown = Duration::from_millis((1e3 * user_config.cooldown) as u64);
+
+    // Warn if someone includes a "#" in the channel name, since the name comparisions happen
+    // without the leading "#".
+    let allowed_channels: Vec<String> = user_config.bot_channels;
+    for channel in &allowed_channels {
+        if channel.starts_with("#") {
+            println!(
+                "[WARNIGN] Channel name starts with '#', but probably shouldn't: {}",
+                channel
+            );
+        }
+    }
+
+    // Store the trigger phrases in lower case, to ease case-insensitive comparisons.
+    let triggers: Vec<String> = user_config.trigger_phrases
+        .iter()
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+    let resp_text: Vec<String> = user_config.response_phrases;
+    let resp_files: Vec<PathBuf> = user_config.response_filenames;
+    {
+        let mut not_found = vec![];
+        for path in &resp_files {
+            if !path.exists() {
+                not_found.push(path);
+            }
+        }
+        if !not_found.is_empty() {
+            bail!("Could not find the following files: {:?}", &not_found);
+        }
+    }
+    if resp_text.is_empty() && resp_files.is_empty() {
+        bail!("There are no response files OR response phrases in the configuration.");
+    }
+
+    Ok(HandlerInner {
+        cooldown,
+        allowed_channels,
+        triggers,
+        resp_text,
+        resp_files,
+
+        user_id: 0,
+        user_name: "".to_string(),
+        state: BotState::Listening,
+    })
+}
+
 fn main() -> Result<(), Box<error::Error>> {
     let id:          u64 = 539280999402438678;
     let permissions: u32 = 117760;
@@ -221,26 +308,12 @@ fn main() -> Result<(), Box<error::Error>> {
     let token = env::var("DISCORD_TOKEN")
         .expect("Set DISCORD_TOKEN before launching the bot");
 
-    // TODO: Invariants for these (should be enforced on conf load)
-    //      resp_text XOR resp_files can be empty, but not both
-    //      resp_files must exist on disk
-    //      triggers must be in lowercase
-    //      channels must not start with '#' - they're matched against names without the prefix '#'
-    let inner = HandlerInner {
-        user_id:          0,
-        user_name:        "".to_string(),
-        cooldown:         Duration::from_secs(1),
-        allowed_channels: vec!["test".to_string()],
-        triggers:         vec!["jesus".to_string(), "christ".to_string()],
-        resp_text:        vec![
-            "You called? A".to_string(),
-            "You called? B".to_string(),
-        ],
-        resp_files:       vec![
-            "buddy.png".into(),
-        ],
-        state:            BotState::Listening,
-    };
+    let mut file = fs::File::open("config.json")?;
+    let mut json_string = String::new();
+    file.read_to_string(&mut json_string)?;
+    println!("{}", json_string);
+
+    let inner = load_config(&json_string)?;
     let mut client = Client::new(&token, Handler::new(inner))?;
     client.start()?;
 

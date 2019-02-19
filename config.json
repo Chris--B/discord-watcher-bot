@@ -1,0 +1,28 @@
+{
+    "cooldown": 10.0,
+    "bot_channels": [
+        "general",
+        "test"
+    ],
+    "response_filenames": [
+        "buddy.png"
+    ],
+    "response_phrases": [
+        "You called?",
+        "Yes?",
+        "Hey, how's it going?",
+        "I love you too",
+        "Ahmen!",
+        "Someone didn't read the config file before saying \"ship it!\"!"
+    ],
+    "trigger_phrases": [
+        "jesus",
+        "christ",
+        "jesuschrist",
+        "oh god",
+        "ohgod",
+        "goddammit",
+        "god damn it",
+        "good god"
+    ]
+}
